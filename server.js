@@ -12,6 +12,7 @@ const jwt = require('jsonwebtoken');
 const cors = require('cors');
 const multer = require('multer');
 const { OAuth2Client } = require('google-auth-library');
+const nodemailer = require('nodemailer');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -19,7 +20,26 @@ const PORT = process.env.PORT || 3000;
 // ===================================
 // MIDDLEWARE
 // ===================================
-app.use(cors());
+app.use(cors({
+  origin: [
+    'http://localhost:5173',
+    'http://localhost:3000', 
+    'http://127.0.0.1:5173',
+    'http://127.0.0.1:3000'
+  ],
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
+// Добавьте логирование для отладки
+app.use((req, res, next) => {
+  console.log(`${req.method} ${req.path}`, {
+    body: req.body,
+    headers: req.headers
+  });
+  next();
+});
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use('/uploads', express.static('uploads'));
@@ -38,7 +58,6 @@ const upload = multer({
   }
 });
 
-
 const avatarStorage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, 'uploads/avatars'),
   filename: (req, file, cb) =>
@@ -54,15 +73,84 @@ const uploadAvatar = multer({
   }
 });
 
-
 // Google OAuth Client
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
 // ===================================
+// EMAIL CONFIGURATION
+// ===================================
+const transporter = nodemailer.createTransport({
+  service: 'gmail', // или другой сервис (smtp.mail.ru, яндекс и т.д.)
+  auth: {
+    user: process.env.EMAIL_USER, // ваш email
+    pass: process.env.EMAIL_PASSWORD // пароль приложения (для Gmail - App Password)
+  }
+});
+
+// Функция генерации 6-значного кода
+const generateVerificationCode = () => {
+  return Math.floor(100000 + Math.random() * 900000).toString();
+};
+
+// Функция отправки email с кодом
+const sendVerificationEmail = async (email, code, name) => {
+  const mailOptions = {
+    from: `"Pet Finder" <${process.env.EMAIL_USER}>`,
+    to: email,
+    subject: 'Подтверждение регистрации - Pet Finder',
+    html: `
+      <div style="font-family: 'Arial', sans-serif; max-width: 600px; margin: 0 auto; background-color: #F9FFF8; border-radius: 12px; overflow: hidden; border: 1px solid #E6F4EA;">
+        
+      <div style="background-color: #DDF6E6; text-align: center; ; position: relative;">
+  <img 
+    src="https://images.unsplash.com/photo-1592194996308-7b43878e84a6?auto=format&fit=crop&w=1950&q=80" 
+    alt="Pet Finder Logo" 
+    style="width: 100%; height: 200px; object-fit: cover; border-radius: 12px 12px 0 0;"
+  >
+  <h2 style="color: #2F855A; margin: 15px 0 0 0; font-size: 28px; position: relative; z-index: 1;padding: 30px">
+    Добро пожаловать в Pet Finder!
+  </h2>
+</div>
+
+        <div style="padding: 30px;">
+          <p style="font-size: 16px; color: #1A202C;">Здравствуйте, <strong>${name}</strong>!</p>
+          <p style="font-size: 16px; color: #1A202C;">Спасибо за регистрацию на нашей платформе для поиска потерянных питомцев.</p>
+          
+          <p style="font-size: 16px; color: #1A202C;">Ваш код подтверждения:</p>
+          <div style="background-color: #E6F4EA; padding: 25px; text-align: center; margin: 20px 0; border-radius: 10px;">
+            <h1 style="color: #2F855A; margin: 0; font-size: 36px; letter-spacing: 5px;">${code}</h1>
+          </div>
+          <p style="font-size: 14px; color: #4A5568;">Код действителен в течение <strong>10 минут</strong>.</p>
+
+          <p style="font-size: 14px; color: #4A5568;">Если вы не регистрировались на Pet Finder, просто проигнорируйте это письмо.</p>
+        </div>
+
+        <div style="text-align: center; padding: 20px; background-color: #DDF6E6;">
+          <img src="https://i.imgur.com/Zqj0rTQ.jpg" alt="Cute pets" style="width: 100%; max-width: 500px; border-radius: 12px;">
+        </div>
+
+        <hr style="border: none; border-top: 1px solid #C6F0D6; margin: 30px 0;">
+
+        <p style="color: #4A5568; font-size: 12px; text-align: center; margin-bottom: 20px;">
+          С уважением,<br>
+          Команда Pet Finder
+        </p>
+      </div>
+    `
+  };
+
+  try {
+    await transporter.sendMail(mailOptions);
+    return true;
+  } catch (error) {
+    console.error('Ошибка отправки email:', error);
+    return false;
+  }
+};
+
+
+// ===================================
 // ПОДКЛЮЧЕНИЕ К MONGODB ATLAS
-// ===================================
-// ===================================
-// ПОДКЛЮЧЕНИЕ К MONGODB ATLAS (FIXED)
 // ===================================
 mongoose
   .connect(process.env.MONGODB_URI)
@@ -74,10 +162,22 @@ mongoose
     process.exit(1);
   });
 
-
 // ===================================
 // MONGOOSE SCHEMAS & MODELS
 // ===================================
+
+const VerificationCodeSchema = new mongoose.Schema({
+  email: { type: String, required: true, lowercase: true },
+  code: { type: String, required: true },
+  userData: {
+    name: String,
+    password: String,
+    phone: String
+  },
+  createdAt: { type: Date, default: Date.now, expires: 600 }
+});
+
+const VerificationCode = mongoose.model('VerificationCode', VerificationCodeSchema);
 
 // 1. Пользователь (расширяемый для волонтёров, админов, приютов)
 const UserSchema = new mongoose.Schema({
@@ -100,11 +200,10 @@ const UserSchema = new mongoose.Schema({
 
   telegramId: String,
   googleId: String,
- avatar: {
-  type: String,
-  default: '/uploads/avatars/default.png'
-},
-
+  avatar: {
+    type: String,
+    default: '/uploads/avatars/default.png'
+  },
 
   volunteerInfo: {
     isActive: { type: Boolean, default: false },
@@ -129,33 +228,30 @@ const UserSchema = new mongoose.Schema({
 
 }, { timestamps: true });
 
-
-// Индексы для геолокации
 UserSchema.index({ 'location.coordinates': '2dsphere' });
-
 const User = mongoose.model('User', UserSchema);
 
 // 2. Объявление о питомце
 const PostSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-  type: { type: String, enum: ['lost', 'found'], required: true }, // Потерял / Нашёл
-  animalType: { type: String, required: true }, // собака, кошка, птица и т.д.
-  name: { type: String }, // Имя питомца (может быть неизвестно для найденных)
+  type: { type: String, enum: ['lost', 'found'], required: true },
+  animalType: { type: String, required: true },
+  name: { type: String },
   breed: { type: String },
   color: { type: String },
   age: { type: String },
   gender: { type: String, enum: ['male', 'female', 'unknown'] },
   description: { type: String, required: true },
-  photos: [String], // URLs фотографий
+  photos: [String],
   location: {
     city: { type: String, required: true },
     address: String,
     coordinates: {
       type: { type: String, enum: ['Point'], default: 'Point' },
-      coordinates: { type: [Number], required: true } // [longitude, latitude]
+      coordinates: { type: [Number], required: true }
     }
   },
-  date: { type: Date, required: true }, // Дата потери/находки
+  date: { type: Date, required: true },
   status: { 
     type: String, 
     enum: ['active', 'resolved', 'closed'], 
@@ -166,7 +262,6 @@ const PostSchema = new mongoose.Schema({
     preferredContact: { type: String, enum: ['phone', 'chat', 'both'], default: 'both' }
   },
   views: { type: Number, default: 0 },
-  // Для будущей интеграции AI поиска по фото
   aiFeatures: {
     analyzed: { type: Boolean, default: false },
     features: mongoose.Schema.Types.Mixed
@@ -175,11 +270,9 @@ const PostSchema = new mongoose.Schema({
   updatedAt: { type: Date, default: Date.now }
 });
 
-// Индексы для быстрого поиска
 PostSchema.index({ 'location.coordinates': '2dsphere' });
 PostSchema.index({ animalType: 1, status: 1 });
 PostSchema.index({ createdAt: -1 });
-
 const Post = mongoose.model('Post', PostSchema);
 
 // 3. Чат между пользователями
@@ -192,7 +285,6 @@ const ChatSchema = new mongoose.Schema({
 });
 
 ChatSchema.index({ participants: 1 });
-
 const Chat = mongoose.model('Chat', ChatSchema);
 
 // 4. Сообщения в чате
@@ -205,7 +297,6 @@ const MessageSchema = new mongoose.Schema({
 });
 
 MessageSchema.index({ chatId: 1, createdAt: -1 });
-
 const Message = mongoose.model('Message', MessageSchema);
 
 // 5. Уведомления
@@ -226,7 +317,6 @@ const NotificationSchema = new mongoose.Schema({
 });
 
 NotificationSchema.index({ userId: 1, read: 1 });
-
 const Notification = mongoose.model('Notification', NotificationSchema);
 
 // ===================================
@@ -247,7 +337,6 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
-// Middleware для проверки роли
 const authorizeRole = (...roles) => {
   return (req, res, next) => {
     if (!roles.includes(req.user.role)) {
@@ -261,7 +350,6 @@ const authorizeRole = (...roles) => {
 // HELPER FUNCTIONS
 // ===================================
 
-// Генерация JWT токена
 const generateToken = (user) => {
   return jwt.sign(
     { userId: user._id, email: user.email, role: user.role },
@@ -270,14 +358,13 @@ const generateToken = (user) => {
   );
 };
 
-// Отправка уведомлений пользователям поблизости
 const notifyNearbyUsers = async (post) => {
   try {
     const nearbyUsers = await User.find({
       'location.coordinates': {
         $near: {
           $geometry: post.location.coordinates,
-          $maxDistance: 5000 // 5 км
+          $maxDistance: 5000
         }
       },
       _id: { $ne: post.userId },
@@ -302,12 +389,21 @@ const notifyNearbyUsers = async (post) => {
 // API ROUTES
 // ===================================
 
-// ========== АУТЕНТИФИКАЦИЯ ==========
+// ========== НОВАЯ СИСТЕМА РЕГИСТРАЦИИ С EMAIL ВЕРИФИКАЦИЕЙ ==========
 
-// Регистрация через Email
-app.post('/api/auth/register', async (req, res) => {
+// ШАГ 1: Отправка кода на email
+
+
+
+app.post('/api/auth/register/send-code', async (req, res) => {
   try {
     const { email, password, name, phone } = req.body;
+    console.log('SEND-CODE HIT', req.body);
+
+    // Валидация данных
+    if (!email || !password || !name) {
+      return res.status(400).json({ error: 'Заполните все обязательные поля' });
+    }
 
     // Проверка существующего пользователя
     const existingUser = await User.findOne({ email });
@@ -318,7 +414,137 @@ app.post('/api/auth/register', async (req, res) => {
     // Хеширование пароля
     const hashedPassword = await bcrypt.hash(password, 10);
 
+    // Генерация кода
+    const code = generateVerificationCode();
+
+    // Удаление старых кодов для этого email
+    await VerificationCode.deleteMany({ email });
+
+    // Сохранение кода и данных пользователя
+    await VerificationCode.create({
+      email,
+      code,
+      userData: {
+        name,
+        password: hashedPassword,
+        phone
+      }
+    });
+
+    // Отправка email
+    const emailSent = await sendVerificationEmail(email, code, name);
+
+    if (!emailSent) {
+      return res.status(500).json({ error: 'Ошибка отправки email' });
+    }
+
+    res.json({ 
+      message: 'Код подтверждения отправлен на email',
+      email // для удобства фронтенда
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Ошибка отправки кода', details: error.message });
+  }
+});
+
+// ШАГ 2: Подтверждение кода и создание пользователя
+app.post('/api/auth/register/verify-code', async (req, res) => {
+  try {
+    const { email, code } = req.body;
+
+    if (!email || !code) {
+      return res.status(400).json({ error: 'Email и код обязательны' });
+    }
+
+    // Поиск кода
+    const verificationRecord = await VerificationCode.findOne({ email, code });
+
+    if (!verificationRecord) {
+      return res.status(400).json({ error: 'Неверный или истёкший код' });
+    }
+
     // Создание пользователя
+    const user = await User.create({
+      email,
+      password: verificationRecord.userData.password,
+      name: verificationRecord.userData.name,
+      phone: verificationRecord.userData.phone,
+      authProvider: 'email'
+    });
+
+    // Удаление кода после успешной регистрации
+    await VerificationCode.deleteOne({ _id: verificationRecord._id });
+
+    // Генерация токена
+    const token = generateToken(user);
+
+    res.status(201).json({
+      message: 'Регистрация успешно завершена',
+      token,
+      user: {
+        id: user._id,
+        email: user.email,
+        name: user.name,
+        role: user.role
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Ошибка подтверждения кода', details: error.message });
+  }
+});
+
+// ШАГ 3: Повторная отправка кода (опционально)
+app.post('/api/auth/register/resend-code', async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ error: 'Email обязателен' });
+    }
+
+    // Поиск существующего кода
+    const verificationRecord = await VerificationCode.findOne({ email });
+
+    if (!verificationRecord) {
+      return res.status(404).json({ error: 'Код не найден. Начните регистрацию заново' });
+    }
+
+    // Генерация нового кода
+    const newCode = generateVerificationCode();
+    verificationRecord.code = newCode;
+    verificationRecord.createdAt = Date.now();
+    await verificationRecord.save();
+
+    // Отправка email
+    const emailSent = await sendVerificationEmail(
+      email, 
+      newCode, 
+      verificationRecord.userData.name
+    );
+
+    if (!emailSent) {
+      return res.status(500).json({ error: 'Ошибка отправки email' });
+    }
+
+    res.json({ message: 'Новый код отправлен на email' });
+  } catch (error) {
+    res.status(500).json({ error: 'Ошибка повторной отправки', details: error.message });
+  }
+});
+
+// ========== СТАРАЯ РЕГИСТРАЦИЯ (оставлена для обратной совместимости) ==========
+// Можно удалить, если не нужна
+app.post('/api/auth/register', async (req, res) => {
+  try {
+    const { email, password, name, phone } = req.body;
+
+    const existingUser = await User.findOne({ email });
+    if (existingUser) {
+      return res.status(400).json({ error: 'Пользователь с таким email уже существует' });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+
     const user = await User.create({
       email,
       password: hashedPassword,
@@ -327,7 +553,6 @@ app.post('/api/auth/register', async (req, res) => {
       authProvider: 'email'
     });
 
-    // Генерация токена
     const token = generateToken(user);
 
     res.status(201).json({
@@ -345,24 +570,22 @@ app.post('/api/auth/register', async (req, res) => {
   }
 });
 
-// Вход через Email
+// ========== АУТЕНТИФИКАЦИЯ ==========
+
 app.post('/api/auth/login', async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    // Поиск пользователя
     const user = await User.findOne({ email });
     if (!user) {
       return res.status(401).json({ error: 'Неверный email или пароль' });
     }
 
-    // Проверка пароля
     const isValidPassword = await bcrypt.compare(password, user.password);
     if (!isValidPassword) {
       return res.status(401).json({ error: 'Неверный email или пароль' });
     }
 
-    // Генерация токена
     const token = generateToken(user);
 
     res.json({
@@ -380,12 +603,10 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
-// Вход через Google
 app.post('/api/auth/google', async (req, res) => {
   try {
     const { tokenId } = req.body;
 
-    // Верификация Google токена
     const ticket = await googleClient.verifyIdToken({
       idToken: tokenId,
       audience: process.env.GOOGLE_CLIENT_ID
@@ -393,7 +614,6 @@ app.post('/api/auth/google', async (req, res) => {
 
     const { email, name, sub: googleId, picture } = ticket.getPayload();
 
-    // Поиск или создание пользователя
     let user = await User.findOne({ email });
     
     if (!user) {
@@ -423,12 +643,10 @@ app.post('/api/auth/google', async (req, res) => {
   }
 });
 
-// Вход через Telegram (webhook от Telegram бота)
 app.post('/api/auth/telegram', async (req, res) => {
   try {
     const { telegramId, firstName, lastName, username } = req.body;
 
-    // Поиск или создание пользователя
     let user = await User.findOne({ telegramId });
     
     if (!user) {
@@ -459,7 +677,6 @@ app.post('/api/auth/telegram', async (req, res) => {
 
 // ========== ПОЛЬЗОВАТЕЛИ ==========
 
-// Получить текущего пользователя
 app.get('/api/users/me', authenticateToken, async (req, res) => {
   try {
     const user = await User.findById(req.user.userId).select('-password');
@@ -468,7 +685,6 @@ app.get('/api/users/me', authenticateToken, async (req, res) => {
     res.status(500).json({ error: 'Ошибка получения профиля' });
   }
 });
-
 
 app.post(
   '/api/users/me/avatar',
@@ -499,12 +715,10 @@ app.post(
   }
 );
 
-
-// Обновить профиль
 app.put('/api/users/me', authenticateToken, async (req, res) => {
   try {
     const updates = req.body;
-    delete updates.password; // Пароль обновляется отдельно
+    delete updates.password;
     
     const user = await User.findByIdAndUpdate(
       req.user.userId,
@@ -518,7 +732,6 @@ app.put('/api/users/me', authenticateToken, async (req, res) => {
   }
 });
 
-// Получить объявления пользователя
 app.get('/api/users/me/posts', authenticateToken, async (req, res) => {
   try {
     const posts = await Post.find({ userId: req.user.userId })
@@ -529,7 +742,6 @@ app.get('/api/users/me/posts', authenticateToken, async (req, res) => {
   }
 });
 
-// Стать волонтёром
 app.post('/api/users/me/volunteer', authenticateToken, async (req, res) => {
   try {
     const { radius, animalTypes } = req.body;
@@ -553,13 +765,11 @@ app.post('/api/users/me/volunteer', authenticateToken, async (req, res) => {
 
 // ========== ОБЪЯВЛЕНИЯ ==========
 
-// Создать объявление
 app.post('/api/posts', authenticateToken, upload.array('photos', 5), async (req, res) => {
   try {
     const { type, animalType, name, breed, color, age, gender, description, 
             city, address, longitude, latitude, date, phone } = req.body;
 
-    // Обработка загруженных фото
     const photos = req.files ? req.files.map(file => `/uploads/${file.filename}`) : [];
 
     const post = await Post.create({
@@ -588,7 +798,6 @@ app.post('/api/posts', authenticateToken, upload.array('photos', 5), async (req,
       }
     });
 
-    // Уведомление пользователей поблизости
     await notifyNearbyUsers(post);
 
     res.status(201).json({ message: 'Объявление создано', post });
@@ -597,23 +806,20 @@ app.post('/api/posts', authenticateToken, upload.array('photos', 5), async (req,
   }
 });
 
-// Получить все объявления с фильтрами
 app.get('/api/posts', async (req, res) => {
   try {
     const { 
       type, animalType, city, status = 'active',
-      latitude, longitude, radius = 10, // радиус в км
+      latitude, longitude, radius = 10,
       page = 1, limit = 20 
     } = req.query;
 
     let query = { status };
 
-    // Фильтры
     if (type) query.type = type;
     if (animalType) query.animalType = animalType;
     if (city) query['location.city'] = new RegExp(city, 'i');
 
-    // Геолокационный поиск
     if (latitude && longitude) {
       query['location.coordinates'] = {
         $near: {
@@ -621,7 +827,7 @@ app.get('/api/posts', async (req, res) => {
             type: 'Point',
             coordinates: [parseFloat(longitude), parseFloat(latitude)]
           },
-          $maxDistance: radius * 1000 // км в метры
+          $maxDistance: radius * 1000
         }
       };
     }
@@ -648,7 +854,6 @@ app.get('/api/posts', async (req, res) => {
   }
 });
 
-// Получить объявление по ID
 app.get('/api/posts/:id', async (req, res) => {
   try {
     const post = await Post.findByIdAndUpdate(
@@ -667,7 +872,6 @@ app.get('/api/posts/:id', async (req, res) => {
   }
 });
 
-// Обновить объявление
 app.put('/api/posts/:id', authenticateToken, upload.array('photos', 5), async (req, res) => {
   try {
     const post = await Post.findById(req.params.id);
@@ -676,14 +880,12 @@ app.put('/api/posts/:id', authenticateToken, upload.array('photos', 5), async (r
       return res.status(404).json({ error: 'Объявление не найдено' });
     }
 
-    // Проверка владельца
     if (post.userId.toString() !== req.user.userId && req.user.role !== 'admin') {
       return res.status(403).json({ error: 'Недостаточно прав' });
     }
 
     const updates = { ...req.body, updatedAt: Date.now() };
     
-    // Обработка новых фото
     if (req.files && req.files.length > 0) {
       const newPhotos = req.files.map(file => `/uploads/${file.filename}`);
       updates.photos = [...(post.photos || []), ...newPhotos];
@@ -701,7 +903,6 @@ app.put('/api/posts/:id', authenticateToken, upload.array('photos', 5), async (r
   }
 });
 
-// Удалить объявление
 app.delete('/api/posts/:id', authenticateToken, async (req, res) => {
   try {
     const post = await Post.findById(req.params.id);
@@ -721,7 +922,6 @@ app.delete('/api/posts/:id', authenticateToken, async (req, res) => {
   }
 });
 
-// Закрыть объявление (питомец найден)
 app.patch('/api/posts/:id/resolve', authenticateToken, async (req, res) => {
   try {
     const post = await Post.findById(req.params.id);
@@ -745,12 +945,10 @@ app.patch('/api/posts/:id/resolve', authenticateToken, async (req, res) => {
 
 // ========== ЧАТЫ ==========
 
-// Создать или получить чат с пользователем
 app.post('/api/chats', authenticateToken, async (req, res) => {
   try {
     const { userId, postId } = req.body;
     
-    // Проверка существующего чата
     let chat = await Chat.findOne({
       participants: { $all: [req.user.userId, userId] },
       postId
@@ -769,7 +967,6 @@ app.post('/api/chats', authenticateToken, async (req, res) => {
   }
 });
 
-// Получить все чаты пользователя
 app.get('/api/chats', authenticateToken, async (req, res) => {
   try {
     const chats = await Chat.find({
@@ -785,12 +982,10 @@ app.get('/api/chats', authenticateToken, async (req, res) => {
   }
 });
 
-// Получить сообщения чата
 app.get('/api/chats/:chatId/messages', authenticateToken, async (req, res) => {
   try {
     const { page = 1, limit = 50 } = req.query;
 
-    // Проверка доступа к чату
     const chat = await Chat.findById(req.params.chatId);
     if (!chat || !chat.participants.includes(req.user.userId)) {
       return res.status(403).json({ error: 'Недостаточно прав' });
@@ -808,12 +1003,10 @@ app.get('/api/chats/:chatId/messages', authenticateToken, async (req, res) => {
   }
 });
 
-// Отправить сообщение
 app.post('/api/chats/:chatId/messages', authenticateToken, async (req, res) => {
   try {
     const { text } = req.body;
 
-    // Проверка доступа к чату
     const chat = await Chat.findById(req.params.chatId);
     if (!chat || !chat.participants.includes(req.user.userId)) {
       return res.status(403).json({ error: 'Недостаточно прав' });
@@ -825,13 +1018,11 @@ app.post('/api/chats/:chatId/messages', authenticateToken, async (req, res) => {
       text
     });
 
-    // Обновление последнего сообщения в чате
     await Chat.findByIdAndUpdate(req.params.chatId, {
       lastMessage: text,
       lastMessageAt: Date.now()
     });
 
-    // Создание уведомления для получателя
     const recipientId = chat.participants.find(id => id.toString() !== req.user.userId);
     await Notification.create({
       userId: recipientId,
@@ -849,7 +1040,6 @@ app.post('/api/chats/:chatId/messages', authenticateToken, async (req, res) => {
 
 // ========== УВЕДОМЛЕНИЯ ==========
 
-// Получить уведомления
 app.get('/api/notifications', authenticateToken, async (req, res) => {
   try {
     const notifications = await Notification.find({ userId: req.user.userId })
@@ -863,7 +1053,6 @@ app.get('/api/notifications', authenticateToken, async (req, res) => {
   }
 });
 
-// Отметить уведомление как прочитанное
 app.patch('/api/notifications/:id/read', authenticateToken, async (req, res) => {
   try {
     await Notification.findByIdAndUpdate(req.params.id, { read: true });
@@ -875,7 +1064,6 @@ app.patch('/api/notifications/:id/read', authenticateToken, async (req, res) => 
 
 // ========== АДМИН-ПАНЕЛЬ ==========
 
-// Получить всех пользователей (админ)
 app.get('/api/admin/users', authenticateToken, authorizeRole('admin'), async (req, res) => {
   try {
     const { page = 1, limit = 20, role } = req.query;
@@ -905,12 +1093,11 @@ app.get('/api/admin/users', authenticateToken, authorizeRole('admin'), async (re
   }
 });
 
-
-
 app.listen(PORT, () => {
   console.log(`
 🚀 Pet Finder API запущен
 🌍 http://localhost:${PORT}
 📦 MongoDB: ${mongoose.connection.readyState === 1 ? 'Connected' : 'Disconnected'}
+📧 Email верификация: ${process.env.EMAIL_USER ? '✅ Настроена' : '❌ Не настроена'}
   `);
 });
