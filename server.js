@@ -94,6 +94,7 @@ const generateVerificationCode = () => {
 
 // Функция отправки email с кодом
 const sendVerificationEmail = async (email, code, name) => {
+  
   const mailOptions = {
     from: `"Pet Finder" <${process.env.EMAIL_USER}>`,
     to: email,
